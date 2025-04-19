@@ -42,13 +42,6 @@ architecture synth_logic of lcd_controller is
     type lcd_statemachine_type is (POWER_ON, FUNCTION_SET1, FUNCTION_SET2, DISPLAY_ON, DISPLAY_CLEAR, ENTRY_MODE, RUN_MODE);
     signal lcd_state: lcd_statemachine_type := POWER_ON;
 
-    component JK_FF is
-        port(J: in  std_logic;      -- J input
-             K: in  std_logic;      -- K input
-             CLOCK: in  std_logic;  -- Clock input
-             Q: out std_logic);     -- Q output
-    end component;
-
     --Internal signal used for output:
     signal lcd_out_init: std_logic_vector(LCD_LINES'range) := (others => '0');
     signal lcd_out_run: std_logic_vector(LCD_LINES'range) := (others => '0');
@@ -57,7 +50,6 @@ architecture synth_logic of lcd_controller is
     signal enable_strobe: std_logic := '0';
     signal enable_wire: std_logic_vector(1 downto 0) := (others => '0');
     signal enable_out: std_logic := '0';
-    signal enable_reset: std_logic := '0';
 
     pure function generate_func_set_control_word(number_of_lines: integer; 
                                                 font_size: integer) return std_logic_vector is
@@ -81,11 +73,11 @@ architecture synth_logic of lcd_controller is
     end function;
 
     constant POWER_ON_TIME: integer := integer(50.0E-3 * CLK_FREQ);      --40ms
-    constant WAIT_TIME: integer := integer(40.0E-6 * CLK_FREQ);         --100us
+    constant WAIT_TIME: integer := integer(40.0E-6 * CLK_FREQ);          --100us
     constant DISPLAY_CLEAR_TIME: integer := integer(1.8E-3 * CLK_FREQ);  --2ms
     constant SET_UP_TIME: integer := integer(80.0E-9 * CLK_FREQ);        --80ns
     constant HOLD_TIME: integer := integer(10.0E-9 * CLK_FREQ);          --10ns
-    constant EN_HIGH_TIME: integer := integer(460.0E-9 * CLK_FREQ);      --460ns
+    constant EN_HIGH_TIME: integer := integer(480.0E-9 * CLK_FREQ);      --460ns
     constant EN_LOW_TIME: integer := integer(740.0E-9 * CLK_FREQ);       --740ns
     constant FUNCTION_SET: std_logic_vector(LCD_LINES'high - 2 downto 0) := generate_func_set_control_word(NUMBER_OF_LINES, FONT_SIZE);
     constant DISPLAY_ON_SET: std_logic_vector(LCD_LINES'high - 2 downto 0) := X"0F";
@@ -100,11 +92,7 @@ begin
         LCD_LINES <= lcd_out_run when RUN_MODE,
                      lcd_out_init when others;
 
-    --Internal signaling
-    ENABLE_STROBE_FF: JK_FF port map(J => or_reduce(enable_wire),
-                                     K => enable_reset,
-                                     CLOCK => LCD_CLK,
-                                     Q => enable_strobe);
+    enable_strobe <= or_reduce(enable_wire);
 
     statemachine_proc: process(LCD_CLK, RESETN) is
         alias enable_strobe: std_logic is enable_wire(0);
@@ -135,69 +123,59 @@ begin
                 when FUNCTION_SET1 =>
                     if(counter = WAIT_TIME) then
                         counter := 0;
-                        lcd_state <= FUNCTION_SET2;
-                    elsif(counter > 0 and counter < 5) then
-                        enable_strobe <= '1';
-                    elsif(counter = 6) then
                         enable_strobe <= '0';
+                        lcd_state <= FUNCTION_SET2;
                     else
+                        enable_strobe <= '1';
                         lcd_state <= FUNCTION_SET1;
                     end if;
                     counter := counter + 1;
                 when FUNCTION_SET2 =>
                     if(counter = WAIT_TIME) then
                         counter := 0;
+                        enable_strobe <= '0';
                         lcd_state <= DISPLAY_ON;
                     elsif(counter = (WAIT_TIME - SET_UP_TIME)) then
                         data <= DISPLAY_ON_SET;
                         lcd_state <= FUNCTION_SET2;
-                    elsif(counter > 0 and counter < 5) then
-                        enable_strobe <= '1';
-                    elsif(counter = 6) then
-                        enable_strobe <= '0';
                     else
+                        enable_strobe <= '1';
                         lcd_state <= FUNCTION_SET2;
                     end if;
                     counter := counter + 1;
                 when DISPLAY_ON =>
                     if(counter = WAIT_TIME) then
                         counter := 0;
+                        enable_strobe <= '0';
                         lcd_state <= DISPLAY_CLEAR;
                     elsif(counter = (WAIT_TIME - SET_UP_TIME)) then
                         data <= DISPLAY_CLEAR_SET;
                         lcd_state <= DISPLAY_ON;
-                    elsif(counter > 0 and counter < 5) then
-                        enable_strobe <= '1';
-                    elsif(counter = 6) then
-                        enable_strobe <= '0';
                     else
+                        enable_strobe <= '1';
                         lcd_state <= DISPLAY_ON;
                     end if;
                     counter := counter + 1;
                 when DISPLAY_CLEAR =>
                     if(counter = DISPLAY_CLEAR_TIME) then
                         counter := 0;
+                        enable_strobe <= '0';
                         lcd_state <= ENTRY_MODE;
                     elsif(counter = (DISPLAY_CLEAR_TIME - SET_UP_TIME)) then
                         data <= ENTRY_MODE_SET;
                         lcd_state <= DISPLAY_CLEAR;
-                    elsif(counter > 0 and counter < 5) then
-                        enable_strobe <= '1';
-                    elsif(counter = 6) then
-                        enable_strobe <= '0';
                     else
+                        enable_strobe <= '1';
                         lcd_state <= DISPLAY_CLEAR;
                     end if;
                     counter := counter + 1;
                 when ENTRY_MODE =>
                     if(counter = (EN_HIGH_TIME + EN_LOW_TIME)) then
                         counter := 0;
-                        lcd_state <= RUN_MODE;
-                    elsif(counter > 0 and counter < 5) then
-                        enable_strobe <= '1';
-                    elsif(counter = 6) then
                         enable_strobe <= '0';
+                        lcd_state <= RUN_MODE;
                     else
+                        enable_strobe <= '1';
                         lcd_state <= ENTRY_MODE;
                     end if;
                     counter := counter + 1;
@@ -208,22 +186,22 @@ begin
     end process statemachine_proc;
 
     enable_pulse_proc: process(LCD_CLK) is
+        variable enable_strobe_prev: std_logic := '0';
         variable counter: integer := 0;
     begin
         if(rising_edge(LCD_CLK)) then
-            if(enable_strobe = '1') then 
-                if(counter = 0) then
-                    enable_out <= '1';
-                elsif(counter = EN_HIGH_TIME) then
+            if(enable_strobe = '1' and enable_strobe_prev = '0') then
+                counter := 1;
+                enable_out <= '1';
+            elsif(counter > 0) then 
+                if(counter = EN_HIGH_TIME) then
                     enable_out <= '0';
-                elsif(counter = EN_LOW_TIME) then
-                    enable_reset <= '1';
                 end if; 
                 counter := counter + 1;
             else
-                enable_reset <= '0';
                 counter := 0; 
-            end if; 
+            end if;
+            enable_strobe_prev := enable_strobe;
         end if; 
     end process enable_pulse_proc; 
 
